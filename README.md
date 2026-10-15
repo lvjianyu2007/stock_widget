@@ -25,11 +25,14 @@ Windows 桌面股票/基金监控小组件。Python + PySide6，行情走 **aksh
 ## 快速开始（源码运行）
 
 ```powershell
-cd d:\work\stock_widget
+git clone git@github.com:lvjianyu2007/stock_widget.git
+cd stock_widget
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe main.py
 ```
+
+> 没配 SSH 就用 HTTPS：`git clone https://github.com/lvjianyu2007/stock_widget.git`
 
 依赖：`PySide6>=6.6`、`akshare>=1.12`、`pytdx>=1.72`（打包另需 `pyinstaller`）。
 
