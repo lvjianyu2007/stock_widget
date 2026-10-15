@@ -14,7 +14,9 @@ build/
 dist/
 build_log.txt
 
-# ---- IDE 与工具本地目录（.superpowers 只保留需求流水线产物）----
+# ---- IDE 与工具本地目录 ----
 .idea/
-.superpowers/*
-!.superpowers/sdd/
+.superpowers/
+
+# ---- 本地文档：任务设计稿、实现计划、流水线产物，只留本地 ----
+docs/
