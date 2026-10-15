@@ -1,0 +1,19 @@
+# ---- 虚拟环境：约 875 MB，且内含本机绝对路径，绝不能提交 ----
+.venv/
+
+# ---- Python 缓存 ----
+__pycache__/
+*.py[cod]
+
+# ---- 运行时生成：本地行情库 + 个人配置（自选股、窗口位置）----
+data/
+config.json
+
+# ---- 打包产物与日志 ----
+build/
+dist/
+build_log.txt
+
+# ---- IDE 与工具本地目录 ----
+.idea/
+.superpowers/
