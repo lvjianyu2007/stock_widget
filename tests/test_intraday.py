@@ -161,6 +161,41 @@ class BuildAllTest(unittest.TestCase):
         self.assertEqual(series.direction, 1)
         self.assertAlmostEqual(series.change_pct, (105.0 - 101.0) / 101.0 * 100.0)
 
+    def test_code_without_quote_still_gets_a_series(self):
+        """只有分钟线、没有行情快照的代码也要出序列。
+
+        指数通道掉线、某只行情偶发失败时就是这个状态：少了这一条，那只的分时图会一直
+        停在旧数据上，没旧数据时缩略图就退化成一条灰色的占位横线。
+        """
+        series = build_all([], {"sh000001": _records()}, "2026-10-15")["sh000001"]
+        self.assertEqual(len(series.points), 3)
+        self.assertEqual(series.prev_close, 100.0)        # 昨收从分钟线里推出来
+        self.assertEqual(series.latest_price, 103.0)      # 没有行情快照就用最后一根 K 线
+        self.assertEqual(series.direction, 1)             # 有昨收才分得出涨跌
+
+    def test_quote_still_wins_over_bars_only_branch(self):
+        quotes = [Quote(code="600519", price=105.0, prev_close=101.0)]
+        series = build_all(quotes, {"600519": _records()}, "2026-10-15")
+        self.assertEqual(set(series), {"600519"})
+        self.assertEqual(series["600519"].latest_price, 105.0)    # 有行情就优先用行情价
+
+    def test_drops_average_when_scale_does_not_match_price(self):
+        """指数的量额口径与股票不同：成交额÷成交量算出来是十几、不是点位，必须丢掉。
+
+        留着它的后果不是画歪一条均价线那么简单——纵轴会被它撑到几千点，价格线直接压成直线。
+        """
+        records = [
+            {"day": "2026-10-16 09:31:00", "close": "3720.5", "volume": "160384000", "amount": "2244411392"},
+            {"day": "2026-10-16 09:32:00", "close": "3723.9", "volume": "150000000", "amount": "2300000000"},
+        ]
+        series = build_series("sh000001", records, "2026-10-16", 3707.48)
+        self.assertEqual([point.price for point in series.points], [3720.5, 3723.9])
+        self.assertTrue(all(point.avg is None for point in series.points))
+
+    def test_keeps_average_when_scale_matches(self):
+        series = build_series("600519", _records(), "2026-10-15", 101.0)
+        self.assertIsNotNone(series.points[0].avg)
+
     def test_minute_rows_match_store_columns(self):
         quotes = [Quote(code="600519", price=105.0, prev_close=101.0)]
         series = build_all(quotes, {"600519": _records()}, "2026-10-15")

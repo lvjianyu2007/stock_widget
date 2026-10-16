@@ -275,9 +275,13 @@ class QuoteFetcher(QThread):
         return True
 
     def _fetch_minutes(self, quotes: list) -> None:
-        """拉每只当天分钟线，落盘后交给界面画分时图。"""
+        """拉每只当天分钟线，落盘后交给界面画分时图。
+
+        代码要取配置里的全部、而不是"这一轮行情成功的那些"：某只行情掉线时
+        （指数通道尤其容易抖），它的分时图不该跟着停摆。
+        """
         day = datetime.now().strftime("%Y-%m-%d")
-        codes = [quote.code for quote in quotes]
+        codes = list(self._codes) or [quote.code for quote in quotes]
         try:
             bars = self._service.fetch_minute_bars(codes)
         except Exception as exc:
@@ -542,6 +546,10 @@ class StockWidget(QWidget):
             row = self._rows.get(quote.code)
             if row is not None:
                 row.set_quote(quote, self._names.get(quote.code, ""))
+            series = self._series.get(quote.code)
+            if series is not None and series.prev_close <= 0 < quote.prev_close:
+                # 库里恢复出来的序列没带昨收，行情一到就补上，基准线/涨跌幅才不会算错
+                series.prev_close = quote.prev_close
 
         self._render_footer()
 

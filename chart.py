@@ -70,11 +70,14 @@ class IntradayPainter:
 
     @staticmethod
     def max_deviation(points, baseline: float) -> float:
-        """上下对称的幅度：价格与均价偏离基准的最大绝对值，至少留 0.5%。"""
+        """上下对称的幅度：价格偏离基准的最大绝对值，至少留 0.5%。
+
+        只按价格定纵轴：均价在个别品种上口径完全不同（指数算出来是十几，不是点位），
+        把它算进偏离范围会把区间撑到几千点，价格线就被压成一条水平直线。
+        """
         if baseline <= 0 or not points:
             return 0.0
-        values = [point.price for point in points] + [point.avg for point in points if point.avg is not None]
-        deviation = max(abs(value - baseline) for value in values)
+        deviation = max(abs(point.price - baseline) for point in points)
         return max(deviation, baseline * MIN_DEV_PCT / 100.0)
 
     def mapped_points(self, points, baseline: float, max_dev: float, rect: QRectF, *, use_avg: bool = False) -> list[QPointF]:

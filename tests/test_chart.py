@@ -95,10 +95,14 @@ class RangeTest(unittest.TestCase):
         series = _series(prev_close=0.0)
         self.assertEqual(IntradayPainter.baseline_of(series, series.points), 102.0)
 
-    def test_max_deviation_uses_avg_values_too(self):
+    def test_max_deviation_only_counts_prices(self):
         series = _series(prev_close=100.0)
-        deviation = IntradayPainter.max_deviation(series.points, 100.0)
-        self.assertAlmostEqual(deviation, 3.0)      # 均价最高 102.5 也在这条线内
+        self.assertAlmostEqual(IntradayPainter.max_deviation(series.points, 100.0), 3.0)    # 价格 98~103
+
+    def test_max_deviation_ignores_average_with_foreign_scale(self):
+        """均价量级不对（指数就是）时不能撑大纵轴，否则价格线会被压成一条直线。"""
+        points = [MinutePoint(time="09:31", price=3720.5, avg=14.0), MinutePoint(time="09:32", price=3735.0, avg=14.5)]
+        self.assertAlmostEqual(IntradayPainter.max_deviation(points, 3707.0), 28.0)         # 只看价格 |3735-3707|
 
     def test_max_deviation_has_minimum_range(self):
         records = [{"day": "2026-10-15 09:31:00", "close": "100.0", "volume": "1", "amount": "100"}]

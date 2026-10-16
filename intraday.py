@@ -11,6 +11,9 @@ SESSIONS = ((9 * 60 + 30, 11 * 60 + 30), (13 * 60, 15 * 60))
 MORNING_MINUTES = SESSIONS[0][1] - SESSIONS[0][0]     # 上午 120 分钟
 TOTAL_MINUTES = 240                                   # 全天分钟数（午休不占宽度）
 
+AVG_MIN_RATIO = 0.5      # 均价 / 价格 的合理区间；越界说明该品种的量额口径不同
+AVG_MAX_RATIO = 2.0      # （指数就是这样：成交额÷成交量算出来是十几，不是点位）
+
 
 def _num(value, default: float = 0.0) -> float:
     try:
@@ -22,6 +25,17 @@ def _num(value, default: float = 0.0) -> float:
 
 def _hhmm(minutes: int) -> str:
     return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def _sane_average(avg: float | None, price: float) -> float | None:
+    """均价必须与价格同量级，越界就丢掉。
+
+    指数的成交量/成交额口径和股票不同，成交额÷成交量算出来是十几而不是点位；
+    这种均价留着不只是画歪一条线 —— 纵轴会被它撑到几千点，价格线直接压成直线。
+    """
+    if avg is None or price <= 0:
+        return avg
+    return avg if AVG_MIN_RATIO <= avg / price <= AVG_MAX_RATIO else None
 
 
 @dataclass
@@ -112,7 +126,7 @@ def build_series(code: str, records, day: str, prev_close: float = 0.0) -> Intra
         total_volume += volume
         total_amount += amount
         avg = total_amount / total_volume if total_volume > 0 else None
-        points.append(MinutePoint(time=hhmm, price=close, avg=avg, volume=volume or None))
+        points.append(MinutePoint(time=hhmm, price=close, avg=_sane_average(avg, close), volume=volume or None))
     return IntradaySeries(code=code, day=day, prev_close=prev_close or earlier_close, points=points)
 
 
@@ -163,9 +177,13 @@ def effective_points(series: IntradaySeries, now: "datetime | None" = None) -> l
 
 
 def series_from_rows(code: str, day: str, rows) -> IntradaySeries:
-    """从本地库读出的 [(hhmm, price, avg, volume)] 还原成序列。"""
+    """从本地库读出的 [(hhmm, price, avg, volume)] 还原成序列。
+
+    库里可能存着早期算歪的均价（指数那种口径），这里再过一遍，免得旧数据把图弄坏
+    —— 重启后先显示的就是这批数据。
+    """
     points = [
-        MinutePoint(time=hhmm, price=price, avg=avg, volume=volume)
+        MinutePoint(time=hhmm, price=price, avg=_sane_average(avg, price), volume=volume)
         for hhmm, price, avg, volume in rows
     ]
     return IntradaySeries(code=code, day=day, points=points)
@@ -181,7 +199,12 @@ def minute_rows(series_by_code: dict, day: str) -> list[tuple]:
 
 
 def build_all(quotes, bars_by_code: dict, day: str) -> dict:
-    """把行情快照与分钟线合成每只的分时序列（含实时价）。"""
+    """把行情快照与分钟线合成每只的分时序列（含实时价）。
+
+    只有分钟线、没有行情快照的代码也要出序列（指数通道掉线、某只行情偶发失败时就是
+    这种情况）：昨收从分钟线里推、最新价取最后一根 K 线。否则这只的分时图会一直停在
+    旧数据上 —— 没有旧数据时缩略图就退化成一条灰色的占位横线。
+    """
     result = {}
     for quote in quotes:
         records = bars_by_code.get(quote.code) or []
@@ -190,4 +213,11 @@ def build_all(quotes, bars_by_code: dict, day: str) -> dict:
         if quote.price > 0:
             series.latest_price = quote.price
         result[quote.code] = series
+    for code, records in (bars_by_code or {}).items():
+        if code in result or not records:
+            continue
+        series = build_series(code, records, day, resolve_prev_close(0.0, records, day))
+        if series.points:
+            series.latest_price = series.points[-1].price     # 没有行情快照，就用最后一根 K 线
+        result[code] = series
     return result
