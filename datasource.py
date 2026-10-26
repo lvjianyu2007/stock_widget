@@ -121,11 +121,47 @@ def market_state(now: "datetime | None" = None) -> str:
 
 
 def _sina_symbol(code: str) -> str:
-    """新浪接口用的代码：指数（sh000001/sz399006）已自带前缀，原样返回；其余按沪市 sh、深市 sz 拼。"""
+    """新浪接口用的代码：指数（sh000001/sz399006）已自带前缀，原样返回；北交所 bj；其余按沪市 sh、深市 sz 拼。"""
     text = str(code).strip()
     if _is_index_code(text):
         return text
+    if _is_bj_code(text):
+        return "bj" + text
     return ("sh" if text[:1] in ("5", "6", "9") else "sz") + text
+
+
+SINA_HQ_URL = "https://hq.sinajs.cn/list={codes}"
+SINA_HQ_HEADERS = {"Referer": "https://finance.sina.com.cn"}      # 缺这个 Referer 新浪会直接拒
+
+
+def _parse_sina_hq(line: str) -> "Quote | None":
+    """解析新浪行情接口的一行：var hq_str_sh000001="名称,今开,昨收,现价,最高,最低,...";
+
+    股票和指数是同一套字段顺序，这里只取名称/昨收/现价。现价是 0（停牌、无成交）
+    时返回 None，让上层当成"这轮没取到"，而不是把界面上的价格改成 0。
+    """
+    text = str(line or "").strip()
+    if "hq_str_" not in text or '="' not in text:
+        return None
+    head, _, payload = text.partition('="')
+    code = head.rsplit("hq_str_", 1)[-1].strip().lower()
+    fields = payload.rstrip('";').split(",")
+    if not code or len(fields) < 6:
+        return None
+    prev_close = _num(fields[2])
+    price = _num(fields[3])
+    if price <= 0:
+        return None
+    change = price - prev_close if prev_close > 0 else 0.0
+    return Quote(
+        code=code,
+        name=fields[0].strip(),
+        price=price,
+        prev_close=prev_close,
+        change=change,
+        change_pct=change / prev_close * 100.0 if prev_close > 0 else 0.0,
+        source="sina",
+    )
 
 
 def _is_bj_code(code: str) -> bool:
@@ -252,19 +288,25 @@ class AkshareProvider:
     name = "akshare"
     BACKENDS = ("minute", "daily", "bid_ask", "sina", "spot")
     BACKEND_LABELS = {
+        "hq": "新浪行情",
         "minute": "新浪分钟",
         "daily": "新浪日线",
         "bid_ask": "东财盘口",
         "sina": "新浪快照",
         "spot": "东财快照",
     }
+    HQ_BUDGET = 6.0             # 新浪行情接口的超时（秒），一次请求正常几十到几百毫秒
+    HQ_BATCH = 60               # 单次请求最多塞多少只代码，别把 URL 拉太长
     PER_CODE_BUDGET = 12.0      # 逐只取数的总时长上限（秒）
     MAX_PER_CODE = 12           # 自选股多过这个数就别逐只取了，直接上快照
     LIGHT_LIMIT = 12            # 不超过这个只数就走"逐只"的轻量路线，请求数少得多
     MAX_WORKERS = 4             # 逐只取数时的并发数
     COOLDOWN = 300.0            # 某个轻量通道拿不到数据后，多久内不再优先它（秒）
+    INDEX_COOLDOWN = 30.0       # 指数快照失败后的冷却：它内部要发 8 个请求，偶发失败很常见，
+                                # 用 300 秒会把"一次抖动"放大成连续 5 分钟没有指数
     ROUND_BUDGET = 45.0         # 一轮取数的总时长上界（秒）；已经拿到数据时会提前收工
     MINUTE_BUDGET = 12.0        # 逐只拉分钟线的总时长上限（秒）
+    INDEX_BUDGET = 6.0          # 指数单只行情接口的超时（秒），1 个请求正常几十到几百毫秒
 
     def __init__(self, known_names: dict | None = None):
         self._backend: str | None = None
@@ -303,7 +345,7 @@ class AkshareProvider:
                         result[quote.code] = quote
             except Exception as exc:
                 errors.append(f"指数 {_friendly_error(exc)}")
-                self._index_blocked_until = time.monotonic() + self.COOLDOWN
+                self._index_blocked_until = time.monotonic() + self.INDEX_COOLDOWN
 
         for backend in self._order(codes):
             if not pending or time.monotonic() > deadline:
@@ -353,17 +395,15 @@ class AkshareProvider:
     def _order(self, codes: list[str]) -> list[str]:
         """挑先走哪条路，原则是"请求数少的优先"。
 
-        - 名称齐了 -> 逐只的轻量线路打头：新浪分钟（盘中也有数据，0.5s/只）
+        - 先走 hq：新浪行情接口把全部代码拼成**一个**请求（实测几十毫秒），
+          指数/股票/ETF 通吃，还自带名称 —— 一条就够，后面几条只是它的兜底
+        - 名称齐了 -> 逐只的轻量线路：新浪分钟（盘中也有数据，0.5s/只）
           -> 新浪日线（收盘后才更新当天 K 线，便宜，留着当兜底）
           -> 东财盘口（1 请求/只，但东财时好时坏）
-        - 还缺名称 -> 先走新浪快照：快照自带名称，一次把名字补齐，之后就走轻量线路
-        - 只数很多 -> 也先试逐只，超时了再退到整份快照
+        - 还缺名称 -> 新浪快照（自带名称，但要翻 63 页，很慢，只当退路）
         - 刚失败过的轻量通道进冷却，排到最后，别每轮都白试一遍
         """
-        if self._needs_names(codes):
-            plan = ["sina", "minute", "daily", "bid_ask", "spot"]
-        else:
-            plan = ["minute", "daily", "bid_ask", "sina", "spot"]
+        plan = ["hq", "minute", "daily", "bid_ask", "sina", "spot"]
 
         now = time.monotonic()
         for name, until in (
@@ -387,6 +427,9 @@ class AkshareProvider:
         )
 
     def _fetch(self, backend: str, codes: list[str]) -> list[Quote]:
+        if backend == "hq":
+            return self._hq_rows(codes)
+
         import akshare as ak
 
         if backend == "bid_ask":
@@ -589,11 +632,70 @@ class AkshareProvider:
         return frame.to_dict("records")
 
     def _fetch_indexes(self, codes: list[str]) -> list[Quote]:
-        """指数快照：新浪指数行情，一次请求覆盖沪深全部指数，代码就是 sh000001 这种形式。"""
-        import akshare as ak
+        """指数行情：新浪单只接口优先（1 个请求），不通再退回 akshare 的全量快照。
 
+        全量快照要分 8 页拉 562 个指数，任何一页失败整轮就失败；我们要的只是其中几行，
+        没必要陪它翻完 —— 那也正是"指数间断性没数据"的老病根。
+        """
         if time.monotonic() < self._index_blocked_until:
             raise RuntimeError("指数快照通道冷却中")
+        try:
+            quotes = self._index_quotes_fast(codes)
+        except Exception:
+            quotes = []
+        if any(not quote.missing for quote in quotes):
+            for quote in quotes:
+                if quote.name:
+                    self._names[quote.code] = quote.name     # 攒着，下轮就不用再查名称了
+            return quotes
+        return self._index_quotes_bulk(codes)
+
+    def _hq_rows(self, codes: list[str]) -> list[Quote]:
+        """新浪行情接口：把全部代码拼成一个请求，指数/股票/ETF 通吃。
+
+        实测 4 只只要几十毫秒，且自带名称和昨收 —— 不用再为了补名称去翻 63 页全市场
+        快照（那条要八九秒）。停牌（现价 0）的会被当成"没取到"，交给后面的兜底。
+        """
+        import requests
+
+        symbol_of = {code: _sina_symbol(code) for code in codes}
+        origin_of = {symbol: code for code, symbol in symbol_of.items()}
+        quotes = []
+        for start in range(0, len(codes), self.HQ_BATCH):
+            batch = codes[start:start + self.HQ_BATCH]
+            symbols = [symbol_of[code] for code in batch]
+            resp = requests.get(SINA_HQ_URL.format(codes=",".join(symbols)), headers=SINA_HQ_HEADERS, timeout=self.HQ_BUDGET)
+            resp.encoding = "gbk"
+            table = {}
+            for line in resp.text.splitlines():
+                quote = _parse_sina_hq(line)
+                if quote is None:
+                    continue
+                origin = origin_of.get(quote.code)
+                if origin is not None:
+                    quote.code = origin        # 换回配置里的写法（股票不带前缀），界面才对得上
+                    table[origin] = quote
+            for code in batch:
+                quotes.append(table.get(code) or Quote(code=code, source=self.name, found=False))
+        return quotes
+
+    def _index_quotes_fast(self, codes: list[str]) -> list[Quote]:
+        """新浪行情接口一次拿完这几只指数：1 个请求、几百毫秒。"""
+        import requests
+
+        resp = requests.get(SINA_HQ_URL.format(codes=",".join(codes)), headers=SINA_HQ_HEADERS, timeout=self.INDEX_BUDGET)
+        resp.encoding = "gbk"
+        table = {}
+        for line in resp.text.splitlines():
+            quote = _parse_sina_hq(line)
+            if quote is not None:
+                table[quote.code] = quote
+        return [table.get(code) or Quote(code=code, source=self.name, found=False) for code in codes]
+
+    def _index_quotes_bulk(self, codes: list[str]) -> list[Quote]:
+        """akshare 的全量指数快照（8 页 / 562 条）：只在单只接口不通时当退路。"""
+        import akshare as ak
+
         frame = ak.stock_zh_index_spot_sina()
         if frame is None or len(frame) == 0 or "代码" not in frame.columns:
             raise RuntimeError("指数快照返回空数据，接口可能已变更")

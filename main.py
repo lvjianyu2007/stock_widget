@@ -59,6 +59,23 @@ CURSOR_FOR = {
 }
 
 
+def _quote_from_series(quote: Quote, series) -> Quote:
+    """行情没取到时，用它分时数据的最后一根 K 线顶上。
+
+    分时本来就每 60 秒拉一次，不额外发请求；没有昨收就算不出涨跌，此时原样返回，
+    让界面保留上一次的价格。
+    """
+    if series is None:
+        return quote
+    price = series.last_price
+    prev_close = series.prev_close
+    if price <= 0 or prev_close <= 0:
+        return quote
+    change = price - prev_close
+    return Quote(code=quote.code, name=quote.name, price=price, prev_close=prev_close,
+                 change=change, change_pct=change / prev_close * 100.0, source=quote.source)
+
+
 class StockRow(QWidget):
     """一行自选股：名称 + 最新价 + 涨跌幅。"""
 
@@ -120,6 +137,14 @@ class StockRow(QWidget):
 
     def set_series(self, series) -> None:
         self.sparkline.set_series(series)
+
+    def has_price(self) -> bool:
+        """已经显示过有效价格。
+
+        这一轮没取到（指数快照偶发失败、通道还在冷却）时用它判断：界面上有旧值就留着，
+        别把好好的价格翻成「无数据」——那会让人以为整只票没数据了。
+        """
+        return self._quote is not None and not self._quote.missing and self._quote.price > 0
 
     def set_quote(self, quote: Quote, fallback_name: str = "") -> None:
         self._quote = quote
@@ -543,8 +568,11 @@ class StockWidget(QWidget):
         if self._service.tdx_host:
             self.config["tdx_host"] = self._service.tdx_host
         for quote in quotes:
+            if quote.missing:
+                # 指数快照偶发失败：先用分时的最后一根 K 线顶上，界面就不会断
+                quote = _quote_from_series(quote, self._series.get(quote.code))
             row = self._rows.get(quote.code)
-            if row is not None:
+            if row is not None and not (quote.missing and row.has_price()):
                 row.set_quote(quote, self._names.get(quote.code, ""))
             series = self._series.get(quote.code)
             if series is not None and series.prev_close <= 0 < quote.prev_close:
