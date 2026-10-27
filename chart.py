@@ -163,7 +163,7 @@ class IntradayChartWindow(QWidget):
     AXIS_WIDTH = 66              # 右侧价格刻度宽度
     TIME_AXIS_HEIGHT = 20        # 底部时间刻度高度
     HEADER_HEIGHT = 26
-    MIN_OPACITY = 0.35           # 图表需要底衬，背景不透明度不跟随面板设到 0
+    MIN_OPACITY = 0.35           # 只在主窗口设成全透明（0）时兜底：否则整个窗口看不见、也点不到
     CLOSE_SIZE = 18              # 右上角关闭按钮边长
     FOOTER_HEIGHT = 14           # 底部状态行高度（时间刻度下面单独一行）
 
@@ -216,7 +216,9 @@ class IntradayChartWindow(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
         panel = panel_rect(self.width(), self.height())
-        opacity = max(self.MIN_OPACITY, min(1.0, float(self._style["opacity"])))
+        opacity = max(0.0, min(1.0, float(self._style["opacity"])))
+        if opacity <= 0.0:
+            opacity = self.MIN_OPACITY      # 主窗口设成全透明时只能退让一步：否则图完全看不见
         draw_shadow(painter, panel, opacity)
         draw_background(painter, panel, self._style["bg_color"], opacity)
         draw_grip(painter, panel, opacity)
