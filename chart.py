@@ -258,17 +258,27 @@ class IntradayChartWindow(QWidget):
         series = self._series
         if series is None or series.last_price <= 0:
             return
+        decimals = 3 if self._is_fund(self.code) else 2
+        painter.setFont(QFont(NUM_FONT, size))
         color = QColor(self._style["flat_color"])
         if series.direction > 0:
             color = QColor(self._style["up_color"])
         elif series.direction < 0:
             color = QColor(self._style["down_color"])
         color.setAlphaF(max(0.0, min(1.0, float(self._style["font_opacity"]))))
-        painter.setFont(QFont(NUM_FONT, size))
         painter.setPen(QPen(color))
-        decimals = 3 if self._is_fund(self.code) else 2
         text = f"{series.last_price:.{decimals}f}  {series.change_pct:+.2f}%"
         painter.drawText(header, Qt.AlignRight | Qt.AlignVCenter, text)
+        avg = series.avg_price
+        if avg is not None and avg > 0:
+            # 均价价格贴在最新价左侧，颜色跟均价线保持一致
+            avg_text = f"均价 {avg:.{decimals}f}"
+            gap = painter.fontMetrics().horizontalAdvance(text) + 8
+            avg_rect = QRectF(header.left(), header.top(), header.width() - gap, header.height())
+            avg_color = QColor(AVG_COLOR)
+            avg_color.setAlphaF(max(0.0, min(1.0, float(self._style["font_opacity"]))))
+            painter.setPen(QPen(avg_color))
+            painter.drawText(avg_rect, Qt.AlignRight | Qt.AlignVCenter, avg_text)
 
     def _draw_axes(self, painter: QPainter, chart: QRectF) -> None:
         series = self._series

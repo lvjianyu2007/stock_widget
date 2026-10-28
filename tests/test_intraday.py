@@ -196,6 +196,14 @@ class BuildAllTest(unittest.TestCase):
         series = build_series("600519", _records(), "2026-10-15", 101.0)
         self.assertIsNotNone(series.points[0].avg)
 
+    def test_avg_price_returns_last_non_none_average(self):
+        series = build_series("600519", _records(), "2026-10-15", 101.0)
+        self.assertAlmostEqual(series.avg_price, (102000 + 103000) / 2000)
+
+    def test_avg_price_is_none_without_average(self):
+        series = build_series("sh000001", [], "2026-10-15", 100.0)
+        self.assertIsNone(series.avg_price)
+
     def test_minute_rows_match_store_columns(self):
         quotes = [Quote(code="600519", price=105.0, prev_close=101.0)]
         series = build_all(quotes, {"600519": _records()}, "2026-10-15")

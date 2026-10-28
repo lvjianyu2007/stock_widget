@@ -75,6 +75,14 @@ class IntradaySeries:
         diff = self.last_price - self.prev_close
         return 1 if diff > 0 else -1 if diff < 0 else 0
 
+    @property
+    def avg_price(self) -> float | None:
+        """均价线当前值：取最后一个有均价的分钟点；没有均价则返回 None。"""
+        for point in reversed(self.points):
+            if point.avg is not None:
+                return point.avg
+        return None
+
 
 def clamp_to_session(now: datetime) -> str:
     """把时刻钳到最近的交易时段内：开盘前停在 09:30，午休停在 11:30，收盘后停在 15:00。"""
