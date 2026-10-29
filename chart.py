@@ -271,11 +271,11 @@ class IntradayChartWindow(QWidget):
         painter.drawText(header, Qt.AlignRight | Qt.AlignVCenter, text)
         avg = series.avg_price
         if avg is not None and avg > 0:
-            # 均价价格贴在最新价左侧，颜色跟均价线保持一致
+            # 均价价格贴在最新价左侧
             avg_text = f"均价 {avg:.{decimals}f}"
             gap = painter.fontMetrics().horizontalAdvance(text) + 8
             avg_rect = QRectF(header.left(), header.top(), header.width() - gap, header.height())
-            avg_color = QColor(AVG_COLOR)
+            avg_color = QColor("#000000")
             avg_color.setAlphaF(max(0.0, min(1.0, float(self._style["font_opacity"]))))
             painter.setPen(QPen(avg_color))
             painter.drawText(avg_rect, Qt.AlignRight | Qt.AlignVCenter, avg_text)
