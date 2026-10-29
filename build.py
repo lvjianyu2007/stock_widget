@@ -14,6 +14,7 @@
 2. 备份并还原 dist 里的 config.json —— 重新打包不会丢掉你调好的样式/自选股/窗口位置
 3. 清理旧产物：删不掉（被占用/权限不足）就自动改名让开，保证打包能继续
 4. 校验产物是否真的生成，失败时直接打印日志尾部
+5. 把源目录的 config.json 和 data/（当天行情库）带进产物，打包出的 exe 直接沿用当前配置与数据
 """
 from __future__ import annotations
 
@@ -205,6 +206,29 @@ def restore_configs(saved: dict[Path, bytes]) -> None:
             say(f"     [警告] 还原 {path.name} 失败：{exc}")
 
 
+def deploy_runtime_files(onefile: bool) -> None:
+    """把源目录的 config.json 和 data/ 带进产物。
+
+    config.json 与当天行情库（data/quote.db）是运行时的外部文件，不能打进 exe
+    内部（exe 里只读、每次解包到临时目录），必须放在 exe 旁边：目录版放
+    dist/StockWidget/，单文件版放 dist/。这里按源目录为准覆盖过去。
+    """
+    target = DIST if onefile else DIST / APP
+    for src in (ROOT / "config.json", ROOT / "data"):
+        if not src.exists():
+            continue
+        dst = target / src.name
+        try:
+            if src.is_dir():
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+            else:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+            say(f"     已打包 {src.relative_to(ROOT)} -> {dst.relative_to(ROOT)}")
+        except Exception as exc:
+            say(f"     [警告] 复制 {src.name} 失败：{exc}")
+
+
 def show_result(mode: str) -> None:
     say()
     say("=" * 56)
@@ -267,6 +291,12 @@ def main(argv: list[str]) -> int:
         say()
         say(f"[失败] 完整日志：{LOG}（把最后几行发我即可）")
         return 1
+
+    step(7, "打包配置文件与数据")
+    if mode in ("dir", "both"):
+        deploy_runtime_files(onefile=False)
+    if mode in ("onefile", "both"):
+        deploy_runtime_files(onefile=True)
 
     if leftovers:
         say()
