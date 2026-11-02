@@ -184,6 +184,8 @@ class IntradayChartWindow(QWidget):
         self._close_hover = False
         self._close_pressed = False
         self._suppress_close = False  # 右键菜单 / 切换置顶引发的那次失活不算数
+        self._hover_point = None      # 鼠标悬停吸附到的分钟点
+        self._hover_pos = None        # 鼠标位置，信息块跟着它走
 
         self.setWindowTitle(f"分时图 · {self._name}")
         self.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -234,6 +236,7 @@ class IntradayChartWindow(QWidget):
             return
         self._draw_axes(painter, chart)
         self._brush.draw(painter, chart, self._series)
+        self._draw_hover(painter, chart)
         painter.end()
 
     def _has_data(self) -> bool:
@@ -324,6 +327,85 @@ class IntradayChartWindow(QWidget):
         rect = QRectF(chart.left(), chart.bottom() + self.TIME_AXIS_HEIGHT + 1, chart.width() + self.AXIS_WIDTH, self.FOOTER_HEIGHT)
         painter.drawText(rect, Qt.AlignLeft | Qt.AlignVCenter, footer)
 
+    def _draw_hover(self, painter: QPainter, chart: QRectF) -> None:
+        """悬停层：竖直虚线 + 吸附点 + 右侧涨跌幅 + 光标旁信息块。"""
+        point = self._hover_point
+        series = self._series
+        if point is None or series is None:
+            return
+        points = effective_points(series)
+        baseline = self._brush.baseline_of(series, points)
+        max_dev = self._brush.max_deviation(points, baseline)
+        index = minutes_of(point.time)
+        if index is None:
+            return
+        decimals = 3 if self._is_fund(self.code) else 2
+        x = self._brush.map_x(index, chart)
+        y = self._brush.map_y(point.price, baseline, max_dev, chart)
+        pct = (point.price - baseline) / baseline * 100.0 if baseline > 0 else 0.0
+        color = self._pct_color(pct)
+
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        # 竖直虚线
+        painter.setPen(QPen(QColor(180, 190, 205, 150), 1, Qt.DashLine))
+        painter.drawLine(QPointF(x, chart.top()), QPointF(x, chart.bottom()))
+        # 吸附点：先描一圈深色，再填涨跌色，压在线上更醒目
+        painter.setPen(QPen(QColor(14, 20, 32), 2))
+        painter.setBrush(color)
+        painter.drawEllipse(QPointF(x, y), POINT_RADIUS + 1.0, POINT_RADIUS + 1.0)
+
+        # 右侧刻度区：该点涨跌幅（盖住该位置的刻度文字）
+        painter.setFont(QFont(NUM_FONT, max(8, int(self._style["font_size"]) - 4)))
+        metrics = painter.fontMetrics()
+        pct_text = f"{pct:+.2f}%"
+        label_w = max(metrics.horizontalAdvance(pct_text) + 10, self.AXIS_WIDTH - 8)
+        label = QRectF(chart.right() + 4, y - 9, label_w, 18)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(14, 20, 32, 225))
+        painter.drawRoundedRect(label, 4, 4)
+        painter.setPen(QPen(color))
+        painter.drawText(label, Qt.AlignCenter, pct_text)
+
+        # 光标旁信息块：时间 + 价格 + 百分比
+        if self._hover_pos is not None:
+            self._draw_hover_tip(painter, point, pct, decimals)
+        painter.restore()
+
+    def _draw_hover_tip(self, painter: QPainter, point, pct: float, decimals: int) -> None:
+        """跟随光标的小信息块，靠近窗口边缘时自动翻到另一侧。"""
+        text = f"{point.time}  {point.price:.{decimals}f}  {pct:+.2f}%"
+        panel = panel_rect(self.width(), self.height())
+        pad_x, pad_y = 8, 5
+        metrics = painter.fontMetrics()
+        width = metrics.horizontalAdvance(text) + pad_x * 2
+        height = metrics.height() + pad_y * 2
+        mx, my = self._hover_pos.x(), self._hover_pos.y()
+        left = mx + 14
+        top = my + 14
+        if left + width > panel.right() - 6:
+            left = mx - 14 - width
+        if top + height > panel.bottom() - 6:
+            top = my - 14 - height
+        left = max(panel.left() + 6, left)
+        top = max(panel.top() + 6, top)
+        box = QRectF(left, top, width, height)
+        painter.setPen(QPen(QColor(70, 82, 98), 1))
+        painter.setBrush(QColor(14, 20, 32, 235))
+        painter.drawRoundedRect(box, 5, 5)
+        painter.setPen(QPen(QColor(232, 238, 247)))
+        painter.drawText(box.adjusted(pad_x, 0, -pad_x, 0), Qt.AlignLeft | Qt.AlignVCenter, text)
+
+    def _pct_color(self, pct: float) -> QColor:
+        """涨跌幅配色：红涨、绿跌、平盘用 flat_color。"""
+        if pct > 0:
+            color = QColor(self._style["up_color"])
+        elif pct < 0:
+            color = QColor(self._style["down_color"])
+        else:
+            color = QColor(self._style["flat_color"])
+        return color
+
     def _close_rect(self, panel: QRectF | None = None) -> QRectF:
         """右上角关闭按钮的位置；跟着面板走，缩放后仍然贴着角。"""
         panel = panel if panel is not None else panel_rect(self.width(), self.height())
@@ -348,6 +430,25 @@ class IntradayChartWindow(QWidget):
 
     # ---------- 交互 ----------
 
+    def _hover_point_at(self, pos: QPointF):
+        """把鼠标位置吸附到最近的分钟点；不在图区内返回 None。"""
+        series = self._series
+        if series is None:
+            return None
+        chart = self._chart_rect(panel_rect(self.width(), self.height()))
+        if not chart.contains(pos):
+            return None
+        best = None
+        best_dist = None
+        for point in effective_points(series):
+            index = minutes_of(point.time)
+            if index is None:
+                continue
+            dist = abs(self._brush.map_x(index, chart) - pos.x())
+            if best_dist is None or dist < best_dist:
+                best, best_dist = point, dist
+        return best
+
     def mousePressEvent(self, event) -> None:
         if event.button() != Qt.LeftButton:
             return super().mousePressEvent(event)
@@ -357,6 +458,10 @@ class IntradayChartWindow(QWidget):
             self._close_pressed = True      # 按下与松开都落在按钮上才算点击，拖出去就取消
             event.accept()
             return
+        if self._hover_point is not None:
+            self._hover_point = None
+            self._hover_pos = None
+            self.update()
         if 0 <= panel.right() - pos.x() <= GRIP and 0 <= panel.bottom() - pos.y() <= GRIP:
             self._resizing = True
             self._resize_origin = event.globalPosition().toPoint()
@@ -367,11 +472,22 @@ class IntradayChartWindow(QWidget):
 
     def mouseMoveEvent(self, event) -> None:
         if not (event.buttons() & Qt.LeftButton):
-            hover = self._close_rect().contains(event.position())
-            if hover != self._close_hover:
-                self._close_hover = hover
+            close_hover = self._close_rect().contains(event.position())
+            if close_hover != self._close_hover:
+                self._close_hover = close_hover
                 self.update()
-            self.setCursor(Qt.PointingHandCursor if hover else Qt.ArrowCursor)
+            point = self._hover_point_at(event.position())
+            changed = point is not self._hover_point or point is not None
+            self._hover_point = point
+            self._hover_pos = event.position()
+            if changed:
+                self.update()
+            if close_hover:
+                self.setCursor(Qt.PointingHandCursor)
+            elif point is not None:
+                self.setCursor(Qt.CrossCursor)
+            else:
+                self.setCursor(Qt.ArrowCursor)
             return super().mouseMoveEvent(event)
         if self._resizing and self._resize_geom is not None:
             delta = event.globalPosition().toPoint() - self._resize_origin
@@ -399,8 +515,11 @@ class IntradayChartWindow(QWidget):
         super().mouseReleaseEvent(event)
 
     def leaveEvent(self, event) -> None:
-        if self._close_hover:
+        if self._close_hover or self._hover_point is not None:
             self._close_hover = False
+            self._hover_point = None
+            self._hover_pos = None
+            self.setCursor(Qt.ArrowCursor)
             self.update()
         super().leaveEvent(event)
 
