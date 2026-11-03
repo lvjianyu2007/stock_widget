@@ -328,12 +328,18 @@ class IntradayChartWindow(QWidget):
         painter.drawText(rect, Qt.AlignLeft | Qt.AlignVCenter, footer)
 
     def _draw_hover(self, painter: QPainter, chart: QRectF) -> None:
-        """悬停层：竖直虚线 + 吸附点 + 右侧涨跌幅 + 光标旁信息块。"""
-        point = self._hover_point
+        """悬停层：竖直虚线 + 吸附点 + 右侧涨跌幅 + 光标旁信息块。
+
+        每次绘制都用当前数据重新解析吸附点：行情 10 秒一刷，鼠标停着不动时
+        如果沿用 mouseMove 存下的旧点，显示的价格/百分比会和右上角最新价对不上。
+        """
         series = self._series
-        if point is None or series is None:
+        if series is None or self._hover_pos is None:
             return
         points = effective_points(series)
+        point = self._hover_point_at(self._hover_pos, points)
+        if point is None:
+            return
         baseline = self._brush.baseline_of(series, points)
         max_dev = self._brush.max_deviation(points, baseline)
         index = minutes_of(point.time)
@@ -430,17 +436,23 @@ class IntradayChartWindow(QWidget):
 
     # ---------- 交互 ----------
 
-    def _hover_point_at(self, pos: QPointF):
-        """把鼠标位置吸附到最近的分钟点；不在图区内返回 None。"""
+    def _hover_point_at(self, pos: QPointF, points=None):
+        """把鼠标位置吸附到最近的分钟点；不在图区内返回 None。
+
+        points 可由调用方传入，避免同一帧里重复装配（两处各算一次会出现
+        基线/极值不一致，圆点就会偏离折线）。
+        """
         series = self._series
         if series is None:
             return None
         chart = self._chart_rect(panel_rect(self.width(), self.height()))
         if not chart.contains(pos):
             return None
+        if points is None:
+            points = effective_points(series)
         best = None
         best_dist = None
-        for point in effective_points(series):
+        for point in points:
             index = minutes_of(point.time)
             if index is None:
                 continue
@@ -458,7 +470,7 @@ class IntradayChartWindow(QWidget):
             self._close_pressed = True      # 按下与松开都落在按钮上才算点击，拖出去就取消
             event.accept()
             return
-        if self._hover_point is not None:
+        if self._hover_pos is not None:
             self._hover_point = None
             self._hover_pos = None
             self.update()
@@ -515,7 +527,7 @@ class IntradayChartWindow(QWidget):
         super().mouseReleaseEvent(event)
 
     def leaveEvent(self, event) -> None:
-        if self._close_hover or self._hover_point is not None:
+        if self._close_hover or self._hover_pos is not None:
             self._close_hover = False
             self._hover_point = None
             self._hover_pos = None
