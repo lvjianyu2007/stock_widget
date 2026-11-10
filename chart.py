@@ -353,9 +353,10 @@ class IntradayChartWindow(QWidget):
 
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
-        # 竖直虚线
+        # 十字虚线：竖线定位时间，横线定位价格（横向对照右侧刻度）
         painter.setPen(QPen(QColor(180, 190, 205, 150), 1, Qt.DashLine))
         painter.drawLine(QPointF(x, chart.top()), QPointF(x, chart.bottom()))
+        painter.drawLine(QPointF(chart.left(), y), QPointF(chart.right(), y))
         # 吸附点：先描一圈深色，再填涨跌色，压在线上更醒目
         painter.setPen(QPen(QColor(14, 20, 32), 2))
         painter.setBrush(color)
