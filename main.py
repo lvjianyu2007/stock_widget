@@ -575,9 +575,20 @@ class StockWidget(QWidget):
             if row is not None and not (quote.missing and row.has_price()):
                 row.set_quote(quote, self._names.get(quote.code, ""))
             series = self._series.get(quote.code)
-            if series is not None and series.prev_close <= 0 < quote.prev_close:
+            if series is None:
+                continue
+            if series.prev_close <= 0 < quote.prev_close:
                 # 库里恢复出来的序列没带昨收，行情一到就补上，基准线/涨跌幅才不会算错
                 series.prev_close = quote.prev_close
+            if quote.price > 0:
+                # 行情每轮都到，分钟线却一分钟才拉一次。把最新价同步到序列末端，
+                # 缩略图/分时窗口才不会比旁边的数字慢一分钟，看着割裂。
+                intraday.attach_latest(series, quote.price)
+                if row is not None:
+                    row.set_series(series)
+                window = self._charts.get(quote.code)
+                if window is not None:
+                    window.set_series(series, self._service.source_label, self._last_update, self._last_warning)
 
         self._render_footer()
 
